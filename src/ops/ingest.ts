@@ -3,6 +3,7 @@ import path from 'node:path';
 import type { Vault } from '../core/vault.js';
 import { extractPdfText } from '../core/pdf.js';
 import { loadConfig, saveConfig } from '../core/config.js';
+import { parsePage } from '../core/frontmatter.js';
 import { runAgent, type AgentResult } from '../agent/session.js';
 import { INGEST_PROMPT } from '../agent/prompts.js';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
@@ -24,6 +25,14 @@ export interface IngestResult extends AgentResult {
   wasNew: boolean;
 }
 
+/**
+ * Inline-text cap. Beyond this many chars, the extracted text is written to a
+ * temp file under .lorekeeper/extracted/ and the agent is told to Read it
+ * rather than ingesting it inline. Empirically, the in-prompt approach started
+ * silently failing on a 164k-char paper (Bug #1 from the live test).
+ */
+const INLINE_TEXT_CAP = 50_000;
+
 function slugifyFilename(name: string): string {
   const ext = path.extname(name);
   const base = path.basename(name, ext);
@@ -32,6 +41,39 @@ function slugifyFilename(name: string): string {
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
   return `${slug || 'source'}${ext.toLowerCase()}`;
+}
+
+/**
+ * Scan papers/ for any page whose frontmatter `source:` field references the
+ * given vault-relative source path. Returns the first match's vault-relative
+ * page path, or null if no page links to the source.
+ *
+ * This is the post-hoc verification for Bug #1: the SDK reporting `success`
+ * is necessary but not sufficient — we need proof that a page was actually
+ * written for this ingest.
+ */
+async function findPageForSource(vault: Vault, sourceInVault: string): Promise<string | null> {
+  const papersDir = path.join(vault.root, 'papers');
+  let entries: string[];
+  try {
+    entries = await fs.readdir(papersDir);
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    if (!entry.endsWith('.md')) continue;
+    const abs = path.join(papersDir, entry);
+    try {
+      const raw = await fs.readFile(abs, 'utf8');
+      const { data } = parsePage<{ source?: string }>(raw);
+      if (typeof data.source === 'string' && data.source === sourceInVault) {
+        return path.join('papers', entry);
+      }
+    } catch {
+      // skip unreadable / unparseable pages
+    }
+  }
+  return null;
 }
 
 export async function ingestSource(opts: IngestOptions): Promise<IngestResult> {
@@ -71,33 +113,88 @@ export async function ingestSource(opts: IngestOptions): Promise<IngestResult> {
     extractedText = await fs.readFile(destAbs, 'utf8');
   }
 
-  // Build the user message. The agent sees the source path (so it knows where
-  // to cite from) plus the extracted text inline.
+  // Bug #1 fix: large extracted text inlined into the user message caused the
+  // ingest agent to silently return success without writing any pages. Cap
+  // inline text at INLINE_TEXT_CAP. Beyond that, write to a vault-internal
+  // temp file and instruct the agent to Read it.
+  const slug = path.basename(destName, ext);
+  const extractedDir = path.join(opts.vault.root, '.lorekeeper', 'extracted');
+  const extractedRel = path.join('.lorekeeper', 'extracted', `${slug}.txt`);
+  const extractedAbs = path.join(extractedDir, `${slug}.txt`);
+  let usedExtractedFile = false;
+  let textBlock: string;
+  if (extractedText.length > INLINE_TEXT_CAP) {
+    await fs.mkdir(extractedDir, { recursive: true });
+    await fs.writeFile(extractedAbs, extractedText, 'utf8');
+    usedExtractedFile = true;
+    textBlock = [
+      `The extracted text is too long to inline (${extractedText.length} chars).`,
+      `Read it from this vault path with the Read tool, in chunks if needed:`,
+      `  ${extractedRel}`,
+      ``,
+      `Excerpt (first ${INLINE_TEXT_CAP} chars):`,
+      extractedText.slice(0, INLINE_TEXT_CAP),
+      `... [truncated; full text at ${extractedRel}]`,
+    ].join('\n');
+  } else {
+    textBlock = [`===== EXTRACTED TEXT =====`, extractedText, `===== END EXTRACTED TEXT =====`].join(
+      '\n',
+    );
+  }
+
+  // Bug #3 fix: agents hallucinate the `ingested:` date from priors when not
+  // told what today is. Inject it explicitly.
+  const today = new Date().toISOString().slice(0, 10);
+
   const userMessage = [
-    `Ingest this source into the vault:`,
+    `Ingest this source into the vault.`,
+    ``,
+    `Today's date is ${today}. Use this exact date for the page's frontmatter \`ingested:\` field.`,
     ``,
     `Source path: ${sourceInVault}`,
     `Original filename: ${path.basename(absSource)}`,
     `Was already in vault: ${wasNew ? 'no' : 'yes (this is a re-ingest)'}`,
     ``,
-    `===== EXTRACTED TEXT =====`,
-    extractedText,
-    `===== END EXTRACTED TEXT =====`,
+    textBlock,
     ``,
     `Follow the ingest workflow in the schema. Report what you created and updated when done.`,
   ].join('\n');
 
-  const result = await runAgent({
-    vault: opts.vault,
-    opPrompt: INGEST_PROMPT,
-    userMessage,
-    mode: 'write',
-    model: opts.model,
-    maxTurns: 50, // ingest can take many read/write steps
-    onMessage: opts.onMessage,
-  });
+  let result: AgentResult;
+  try {
+    result = await runAgent({
+      vault: opts.vault,
+      opPrompt: INGEST_PROMPT,
+      userMessage,
+      mode: 'write',
+      model: opts.model,
+      maxTurns: 50,
+      onMessage: opts.onMessage,
+    });
+  } finally {
+    if (usedExtractedFile) {
+      await fs.rm(extractedAbs, { force: true });
+    }
+  }
 
-  // Record ingest in config on success.
+  // Bug #1 fix: post-hoc verification. The SDK can report success even when
+  // the agent never called Write. Confirm a paper page now references this
+  // source on disk before declaring victory.
+  const pagePath = await findPageForSource(opts.vault, sourceInVault);
+  if (result.ok && !pagePath) {
+    return {
+      ...result,
+      ok: false,
+      text:
+        `Agent reported success but no papers/*.md page references ${sourceInVault}. ` +
+        `The ingest silently failed (likely the agent never called Write). ` +
+        `Original agent text:\n\n${result.text}`,
+      sourceInVault,
+      wasNew,
+    };
+  }
+
+  // Record ingest in config on real success.
   if (result.ok && wasNew) {
     const config = await loadConfig(opts.vault);
     config.ingested.push({
