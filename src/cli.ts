@@ -8,6 +8,7 @@ import { initVault } from './ops/init.js';
 import { ingestSource } from './ops/ingest.js';
 import { queryVault } from './ops/query.js';
 import { lintVault } from './ops/lint.js';
+import { pullPapers } from './ops/pull.js';
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 
 /**
@@ -155,6 +156,74 @@ program
       process.exit(1);
     }
   });
+
+program
+  .command('pull <query>')
+  .description('Search arXiv (and optionally Sci-Hub) and auto-ingest the top N papers')
+  .option('-v, --vault <dir>', 'vault directory (defaults to nearest .lorekeeper/ ancestor)')
+  .option('-l, --limit <n>', 'number of papers to ingest', '20')
+  .option('--use-scihub', 'enable Sci-Hub fallback for non-arXiv DOIs')
+  .option('--no-filter', 'skip the LLM relevance filter')
+  .option('-m, --model <name>', 'Claude model override')
+  .action(
+    async (
+      query: string,
+      opts: { vault?: string; limit: string; useScihub?: boolean; filter?: boolean; model?: string },
+    ) => {
+      try {
+        const vault = await resolveVault(opts.vault);
+        const limit = Number.parseInt(opts.limit, 10);
+        if (!Number.isFinite(limit) || limit < 1) {
+          throw new Error(`--limit must be a positive integer, got "${opts.limit}"`);
+        }
+        const spinner = ora(`searching arXiv for "${query}"…`).start();
+        const result = await pullPapers({
+          vault,
+          query,
+          limit,
+          useScihub: opts.useScihub,
+          // commander's --no-filter sets opts.filter = false
+          noFilter: opts.filter === false,
+          model: opts.model,
+          onProgress: (e) => {
+            switch (e.type) {
+              case 'search_done':
+                spinner.text = `found ${e.count} candidates, filtering…`;
+                break;
+              case 'filter_done':
+                spinner.text = `filtered to ${e.count}, downloading…`;
+                break;
+              case 'download_start':
+                spinner.text = `[${e.index}/${e.total}] downloading: ${e.title.slice(0, 60)}`;
+                break;
+              case 'ingest_start':
+                spinner.text = `ingesting: ${e.title.slice(0, 60)}`;
+                break;
+              case 'download_failed':
+                spinner.text = `skipped: ${e.title.slice(0, 60)} (${e.reason})`;
+                break;
+            }
+          },
+        });
+        spinner.stop();
+        console.log(
+          chalk.green(
+            `✓ pull complete: ${result.ingested}/${result.requested} ingested, ${result.fetched} downloaded, ${result.skipped.length} skipped`,
+          ),
+        );
+        if (result.skipped.length > 0) {
+          console.log(chalk.dim('\nSkipped:'));
+          for (const s of result.skipped) {
+            console.log(chalk.dim(`  - ${s.title}: ${s.reason}`));
+          }
+        }
+        if (result.ingested === 0) process.exit(1);
+      } catch (err) {
+        console.error(chalk.red(`✗ pull failed: ${(err as Error).message}`));
+        process.exit(1);
+      }
+    },
+  );
 
 program
   .command('list')
