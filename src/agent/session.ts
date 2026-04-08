@@ -88,12 +88,27 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentResult> {
   const q = query({ prompt: opts.userMessage, options });
 
   let lastText = '';
+  // Track the most recent assistant text block as the iteration runs. On
+  // error_max_turns the SDK never sends a `result.result` field, so the
+  // partial findings would otherwise be silently dropped. Capturing the
+  // running last-message gives lint and other long-running ops something
+  // useful to show the user when they hit the turn cap.
+  let lastAssistantText = '';
   let turns = 0;
   let ok = false;
   let costUsd: number | undefined;
 
   for await (const msg of q) {
     if (opts.onMessage) opts.onMessage(msg);
+
+    if (msg.type === 'assistant') {
+      for (const block of msg.message.content) {
+        if (block.type === 'text' && block.text.trim().length > 0) {
+          lastAssistantText = block.text;
+        }
+      }
+      continue;
+    }
 
     if (msg.type === 'result') {
       turns = msg.num_turns;
@@ -103,9 +118,12 @@ export async function runAgent(opts: RunAgentOptions): Promise<AgentResult> {
         lastText = msg.result;
       } else {
         ok = false;
-        lastText = `Agent run failed: ${msg.subtype}${
+        const errSummary = `Agent run failed: ${msg.subtype}${
           'errors' in msg && msg.errors.length > 0 ? ` — ${msg.errors.join('; ')}` : ''
         }`;
+        lastText = lastAssistantText
+          ? `${errSummary}\n\n--- partial output before failure ---\n${lastAssistantText}`
+          : errSummary;
       }
       break;
     }

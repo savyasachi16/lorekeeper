@@ -23,7 +23,9 @@ export async function lintVault(opts: LintOptions): Promise<AgentResult> {
     userMessage,
     mode: fix ? 'write' : 'read',
     model: opts.model,
-    maxTurns: fix ? 40 : 20,
+    // Live test on a 32-page vault burned through 20 turns just enumerating
+    // pages. Read-mode lint scales roughly with page count; give it headroom.
+    maxTurns: fix ? 80 : 60,
     onMessage: opts.onMessage,
   });
 }
