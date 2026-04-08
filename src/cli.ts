@@ -3,6 +3,7 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
 import path from 'node:path';
+import { promises as fs } from 'node:fs';
 import { findVault, openVault, listPages, type Vault } from './core/vault.js';
 import { initVault } from './ops/init.js';
 import { ingestSource } from './ops/ingest.js';
@@ -176,6 +177,14 @@ program
         if (!Number.isFinite(limit) || limit < 1) {
           throw new Error(`--limit must be a positive integer, got "${opts.limit}"`);
         }
+
+        // Snapshot papers/ count before pull so we can sanity-check disk
+        // state against the reported ingested count after. Belt-and-suspenders
+        // for the silent-failure class of bugs.
+        const papersDir = path.join(vault.root, 'papers');
+        const papersBefore = await fs.readdir(papersDir).catch(() => [] as string[]);
+        const papersBeforeCount = papersBefore.filter((f) => f.endsWith('.md')).length;
+
         const spinner = ora(`searching arXiv for "${query}"…`).start();
         const result = await pullPapers({
           vault,
@@ -199,6 +208,9 @@ program
               case 'ingest_start':
                 spinner.text = `ingesting: ${e.title.slice(0, 60)}`;
                 break;
+              case 'ingest_done':
+                spinner.text = `${e.ok ? '✓' : '✗'} ${e.title.slice(0, 60)} (${e.turns} turns)`;
+                break;
               case 'download_failed':
                 spinner.text = `skipped: ${e.title.slice(0, 60)} (${e.reason})`;
                 break;
@@ -206,9 +218,21 @@ program
           },
         });
         spinner.stop();
+
+        // Per-paper report — surfaces which papers actually wrote pages and
+        // their turn counts. Without this, the aggregate "X/Y ingested"
+        // line would hide silent-failure cases (Bug 1 from the live test).
+        if (result.perPaperResults.length > 0) {
+          console.log(chalk.dim('\nPer-paper results:'));
+          for (const p of result.perPaperResults) {
+            const mark = p.ok ? chalk.green('✓') : chalk.red('✗');
+            console.log(chalk.dim(`  ${mark} ${p.title} (${p.turns} turns)`));
+          }
+        }
+
         console.log(
           chalk.green(
-            `✓ pull complete: ${result.ingested}/${result.requested} ingested, ${result.fetched} downloaded, ${result.skipped.length} skipped`,
+            `\n✓ pull complete: ${result.ingested}/${result.requested} ingested, ${result.fetched} downloaded, ${result.skipped.length} skipped`,
           ),
         );
         if (result.skipped.length > 0) {
@@ -217,6 +241,21 @@ program
             console.log(chalk.dim(`  - ${s.title}: ${s.reason}`));
           }
         }
+
+        // Sanity check: count papers/*.md actually present on disk vs the
+        // op's reported ingested count. If they disagree, the in-memory
+        // tally is lying — print a loud warning.
+        const papersAfter = await fs.readdir(papersDir).catch(() => [] as string[]);
+        const papersAfterCount = papersAfter.filter((f) => f.endsWith('.md')).length;
+        const diskDelta = papersAfterCount - papersBeforeCount;
+        if (diskDelta !== result.ingested) {
+          console.log(
+            chalk.yellow(
+              `\n⚠ sanity check: pull reported ${result.ingested} ingested, but papers/ grew by ${diskDelta} pages. Inspect the vault.`,
+            ),
+          );
+        }
+
         if (result.ingested === 0) process.exit(1);
       } catch (err) {
         console.error(chalk.red(`✗ pull failed: ${(err as Error).message}`));
