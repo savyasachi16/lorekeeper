@@ -91,7 +91,7 @@ describe('parseArxivFeed', () => {
 });
 
 describe('candidateFilename', () => {
-  it('slugifies title to a safe pdf filename', () => {
+  it('prefixes the arXiv id and slugifies the title', () => {
     const name = candidateFilename({
       id: '1706.03762',
       title: 'Attention Is All You Need',
@@ -99,7 +99,7 @@ describe('candidateFilename', () => {
       abstract: '',
       source: 'arxiv',
     });
-    expect(name).toBe('attention-is-all-you-need.pdf');
+    expect(name).toBe('1706.03762-attention-is-all-you-need.pdf');
   });
 
   it('strips punctuation and special characters', () => {
@@ -110,10 +110,10 @@ describe('candidateFilename', () => {
       abstract: '',
       source: 'arxiv',
     });
-    expect(name).toBe('bert-pre-training-of-deep-bidirectional-transformers.pdf');
+    expect(name).toBe('x-bert-pre-training-of-deep-bidirectional-transformers.pdf');
   });
 
-  it('falls back to id when title is empty', () => {
+  it('falls back to id-only when title is empty', () => {
     const name = candidateFilename({
       id: '2401.00001',
       title: '',
@@ -124,17 +124,36 @@ describe('candidateFilename', () => {
     expect(name).toBe('2401.00001.pdf');
   });
 
-  it('truncates very long titles', () => {
+  it('truncates the title slug at 80 chars but preserves the id prefix', () => {
     const longTitle = 'a'.repeat(200);
     const name = candidateFilename({
-      id: 'x',
+      id: '2401.99999',
       title: longTitle,
       authors: [],
       abstract: '',
       source: 'arxiv',
     });
-    // 80-char slug + ".pdf"
-    expect(name.length).toBeLessThanOrEqual(84);
+    // id (10) + dash (1) + 80-char slug + ".pdf" (4) = 95
+    expect(name.length).toBeLessThanOrEqual(96);
+    expect(name.startsWith('2401.99999-')).toBe(true);
     expect(name.endsWith('.pdf')).toBe(true);
+  });
+
+  it('disambiguates two papers whose titles share a long prefix', () => {
+    const a = candidateFilename({
+      id: '2401.00001',
+      title: 'A Very Long Title That Goes On And On About Some Topic',
+      authors: [],
+      abstract: '',
+      source: 'arxiv',
+    });
+    const b = candidateFilename({
+      id: '2402.00002',
+      title: 'A Very Long Title That Goes On And On About Some Topic',
+      authors: [],
+      abstract: '',
+      source: 'arxiv',
+    });
+    expect(a).not.toBe(b);
   });
 });

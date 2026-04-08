@@ -147,12 +147,17 @@ export async function downloadArxivPdf(opts: DownloadPdfOptions): Promise<string
   return dest;
 }
 
-/** Build a filesystem-safe filename for a candidate, ending in `.pdf`. */
+/** Build a filesystem-safe filename for a candidate, ending in `.pdf`.
+ *
+ * Prefixes the slug with the arXiv id (or DOI) so two papers whose titles
+ * share a long prefix can never collide in the same destination directory.
+ * The id-only fallback handles empty/non-ASCII titles. */
 export function candidateFilename(c: PaperCandidate): string {
-  const slug = c.title
+  const idSlug = c.id.replace(/[^a-z0-9.-]+/gi, '-').replace(/^-+|-+$/g, '');
+  const titleSlug = c.title
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '')
     .slice(0, 80);
-  return `${slug || c.id}.pdf`;
+  return titleSlug ? `${idSlug}-${titleSlug}.pdf` : `${idSlug}.pdf`;
 }

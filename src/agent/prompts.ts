@@ -26,6 +26,7 @@ Rules:
 - Cite specific pages inline using [[target]] wikilinks. Every non-trivial claim gets a citation.
 - If the wiki doesn't contain enough information to answer, say so. Do NOT use your pretraining knowledge to fill gaps — the user is asking what THIS wiki says.
 - Be dense and direct. No filler.
+- Output ONLY the final synthesis. Do not narrate your process, do not write phrases like "Now I have a comprehensive view" or "Let me synthesize the answer". Start directly with the answer.
 
 The vault's CLAUDE.md schema is attached below for context.`;
 
