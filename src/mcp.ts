@@ -7,6 +7,7 @@ import { openVault, listPages, resolveInVault, type Vault } from './core/vault.j
 import { ingestSource } from './ops/ingest.js';
 import { queryVault } from './ops/query.js';
 import { lintVault } from './ops/lint.js';
+import { pullPapers } from './ops/pull.js';
 
 /**
  * MCP server exposing lorekeeper ops. The vault path is fixed at startup via
@@ -100,6 +101,51 @@ async function main(): Promise<void> {
     async () => {
       const pages = await listPages(vault);
       return textResult(pages.length === 0 ? '(vault has no pages)' : pages.join('\n'));
+    },
+  );
+
+  server.registerTool(
+    'pull_papers',
+    {
+      description:
+        'Search arXiv (and optionally Sci-Hub) for papers matching a query and auto-ingest the top N most relevant ones into the vault. Each paper goes through the full ingest pipeline. Returns a tally of ingested vs skipped.',
+      inputSchema: {
+        query: z.string().describe('Search query, e.g. "transformer attention mechanisms"'),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(100)
+          .optional()
+          .describe('Number of papers to ingest (default 20, max 100)'),
+        use_scihub: z
+          .boolean()
+          .optional()
+          .describe(
+            'Enable Sci-Hub fallback for non-arXiv DOIs. Default false. User-facing legal caveat applies.',
+          ),
+        no_filter: z
+          .boolean()
+          .optional()
+          .describe('Skip the LLM relevance filter and use arXiv ranking directly'),
+      },
+    },
+    async ({ query, limit, use_scihub, no_filter }) => {
+      const result = await pullPapers({
+        vault,
+        query,
+        limit: limit ?? 20,
+        useScihub: use_scihub,
+        noFilter: no_filter,
+      });
+      const lines = [
+        `pull complete: ${result.ingested}/${result.requested} ingested, ${result.fetched} downloaded, ${result.skipped.length} skipped`,
+      ];
+      if (result.skipped.length > 0) {
+        lines.push('', 'Skipped:');
+        for (const s of result.skipped) lines.push(`  - ${s.title}: ${s.reason}`);
+      }
+      return textResult(lines.join('\n'));
     },
   );
 

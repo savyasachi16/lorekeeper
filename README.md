@@ -29,6 +29,30 @@ lorekeeper query "what is multi-head attention?" --vault my-vault
 lorekeeper lint --vault my-vault
 ```
 
+## Pulling papers from arXiv
+
+Skip the manual download step entirely. `lorekeeper pull` searches arXiv, asks Claude to pick the most relevant results, downloads the PDFs, and runs the full ingest pipeline on each one:
+
+```bash
+lorekeeper pull "transformer attention mechanisms" --limit 20 --vault my-vault
+lorekeeper pull "diffusion model sampling" --limit 5 --no-filter --vault my-vault
+```
+
+Flags:
+
+- `--limit N` — number of papers to ingest (default 20)
+- `--no-filter` — skip the LLM relevance filter and use arXiv's ranking directly
+- `--use-scihub` — enable Sci-Hub fallback for non-arXiv DOIs (off by default; see legal note below)
+- `--model <name>` — Claude model override
+
+Per-paper failures (broken download, ingest error) are recorded in the final report and don't halt the batch.
+
+### Sci-Hub fallback (legal note)
+
+`--use-scihub` is **off by default and must be passed explicitly per invocation**. Sci-Hub's legality varies by jurisdiction; in many countries accessing it may infringe copyright. `lorekeeper` will print a stderr warning the first time it touches Sci-Hub during a run. You are responsible for ensuring your usage is lawful where you live and for the institutions whose materials you access. The default arXiv-only path is unaffected — arXiv is open access.
+
+The mirror list defaults to `sci-hub.se`, `sci-hub.ru`, `sci-hub.st` and can be overridden via the `LOREKEEPER_SCIHUB_MIRRORS` env var (comma-separated).
+
 ## How it works
 
 - **Core operations** (`ingest`, `query`, `lint`) each spawn a [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk) session with a system prompt built from the vault's `CLAUDE.md` schema and file tools scoped to the vault directory.
@@ -52,7 +76,7 @@ my-vault/
 
 ## MCP server
 
-`lorekeeper-mcp` exposes `ingest_source`, `query_wiki`, `lint_wiki`, `list_pages`, and `read_page` as MCP tools so Claude Code can drive your vault directly. Add to `.mcp.json`:
+`lorekeeper-mcp` exposes `ingest_source`, `query_wiki`, `lint_wiki`, `pull_papers`, `list_pages`, and `read_page` as MCP tools so Claude Code can drive your vault directly. Add to `.mcp.json`:
 
 ```json
 {
