@@ -1,0 +1,3 @@
+[submodule "examples/lorekeeper-demo-vault"]
+	path = examples/lorekeeper-demo-vault
+	url = https://github.com/savyasachi16/lorekeeper-demo-vault.git

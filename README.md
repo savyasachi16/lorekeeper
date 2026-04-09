@@ -4,6 +4,8 @@ Build and maintain a persistent, LLM-curated wiki from your sources.
 
 A concrete implementation of [Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f). Instead of re-deriving knowledge via RAG on every query, an LLM incrementally builds and maintains an Obsidian-compatible markdown wiki that compounds as you feed it more sources.
 
+> **See it in action:** browse [`examples/lorekeeper-demo-vault/`](examples/lorekeeper-demo-vault) for a real wiki built from arXiv papers on agent memory architectures.
+
 ## What it does
 
 ```
@@ -33,6 +35,22 @@ lorekeeper lint
 ```
 
 `--vault <dir>` works from anywhere; otherwise commands walk up from `cwd` looking for the nearest `.lorekeeper/`.
+
+## Where your vault lives
+
+A lorekeeper vault is just a directory of markdown files. `lorekeeper init <dir>` creates it at exactly the path you pass — there is no default location, no global registry, and no hidden state outside the vault directory itself.
+
+| Path                      | Contents                                                |
+|---------------------------|---------------------------------------------------------|
+| `CLAUDE.md`               | Schema contract — edit to change how the agent writes   |
+| `.lorekeeper/config.json` | Ingest history (which sources, when)                    |
+| `sources/`                | Raw PDFs, immutable after copy                          |
+| `papers/` `concepts/` `authors/` `methods/` | One markdown page per item           |
+| `index.md`                | Top-level table of contents                             |
+
+**Open it in Obsidian:** point "Open folder as vault" at the directory. No plugins required. Wikilinks, frontmatter, and graph view all work natively.
+
+**Back it up / share it:** `git init` inside the vault, push to a private repo. The wiki history becomes a real artifact you can diff, blame, and roll back.
 
 ## Commands
 
@@ -65,32 +83,17 @@ Per-paper failures are recorded in the final report and don't halt the batch.
 
 ### Sci-Hub fallback
 
-`--use-scihub` is **off by default and must be passed explicitly per invocation**. Sci-Hub's legality varies by jurisdiction and accessing it may infringe copyright in your country. `lorekeeper` prints a stderr warning the first time it touches Sci-Hub during a run. You are responsible for ensuring your usage is lawful where you live and for the institutions whose materials you access. The default arXiv-only path is unaffected — arXiv is open access.
+`--use-scihub` is **off by default and must be passed explicitly per invocation**. Sci-Hub's legality varies by jurisdiction and accessing it may infringe copyright in your country. `lorekeeper` prints a stderr warning the first time it touches Sci-Hub during a run. You are responsible for ensuring your usage is lawful. The default arXiv-only path is unaffected — arXiv is open access.
 
 The mirror list defaults to `sci-hub.se`, `sci-hub.ru`, `sci-hub.st`. Override with `LOREKEEPER_SCIHUB_MIRRORS` (comma-separated).
 
 ## How it works
 
-`ingest`, `query`, `lint`, and `pull` each spawn a [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk) session with a system prompt built from the vault's `CLAUDE.md` schema and file tools scoped to the vault directory. Write ops (`ingest`, `lint --fix`) get read+write tools; read ops get read-only. The agent decides which pages to touch — `lorekeeper` enforces the sandbox and streams progress.
-
-## Vault layout
-
-```
-my-vault/
-├── CLAUDE.md              schema + workflow (user-editable)
-├── .lorekeeper/
-│   └── config.json
-├── sources/               raw inputs, immutable after copy
-├── papers/                one page per paper
-├── concepts/              cross-cutting ideas
-├── authors/               researchers
-├── methods/               techniques
-└── index.md
-```
+Each op spawns a [Claude Agent SDK](https://docs.claude.com/en/api/agent-sdk) session with file tools scoped to the vault directory and a system prompt built from the vault's `CLAUDE.md` schema. The agent decides which pages to create or update — `lorekeeper` enforces the sandbox and streams progress.
 
 ## MCP server
 
-`lorekeeper-mcp` exposes `ingest_source`, `query_wiki`, `lint_wiki`, `pull_papers`, `list_pages`, and `read_page` as MCP tools so Claude Code can drive your vault directly. Add to `.mcp.json`:
+`lorekeeper-mcp` exposes `ingest_source`, `query_wiki`, `lint_wiki`, `pull_papers`, `list_pages`, and `read_page` as MCP tools so Claude Code can drive your vault directly:
 
 ```json
 {
@@ -106,10 +109,10 @@ my-vault/
 ## Development
 
 ```bash
-git clone https://github.com/savyasachi16/lorekeeper.git
+git clone --recursive https://github.com/savyasachi16/lorekeeper.git
 cd lorekeeper
 npm install
-npm test          # vitest, 80 tests
+npm test          # vitest, 84 tests
 npm run typecheck
 npm run build
 ```
